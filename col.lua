@@ -1,3 +1,17 @@
+--[[
+    The shapes should have a parent object like so:
+
+    function GameObject.init(self)
+        ...
+
+        self.bounds = {}
+        self.bounds['hitbox'] = scene:Circle(0,0,16)
+        self.bounds['hitbox'].parent = self
+
+        ...
+    end
+--]]
+
 function getAutoTable()
     return setmetatable({}, {
         __index = function(self, k)
@@ -12,13 +26,17 @@ function getAutoTable()
         __newindex = function(self, k,v)end})
 end
 
-local pprint = require('pprint')
 local Col = Class{__name = 'Col'}
+
+local abs = math.abs
+local floor = math.floor
+
 
 local Circle = Class{__name = 'Circle'}
 function Circle.init(self, x,y,r, scene)
     if not(x and y and r and scene) then error('Missing arg to Circle') end
     self.x,self.y,self.r,self.scene = x,y,r,scene
+    self.w,self.h = self.r*2, self.r*2
 end
 function Circle.draw(self)
     love.graphics.circle('fill',self.x,self.y,self.r)
@@ -28,8 +46,16 @@ function Circle.move(self,x,y)
     self.x,self.y = self.x+x,self.y+y
     self.scene:insert(self)
 end
+function Circle.moveTo(self, x,y)
+    self.scene:remove(self)
+    self.x,self.y = x,y
+    self.scene:insert(self)
+end
 function Circle.center(self)
     return self.x,self.y
+end
+function Circle.bbox(self)
+    return self.x-self.r, self.y-self.r, self.x+self.r, self.y+self.r
 end
 
 
@@ -39,35 +65,36 @@ function Rectangle.init(self, x,y,w,h, scene)
     self.x,self.y,self.w,self.h,self.scene = x,y,w,h,scene
 end
 function Rectangle.draw(self)
-    love.graphics.rectangle('fill',self.x,self.y,self.w,self.h)
+    love.graphics.rectangle('line',self.x,self.y,self.w,self.h)
 end
-function Rectangle.move(self,x,y)
+function Rectangle.move(self, x,y)
     self.scene:remove(self)
     self.x,self.y = self.x+x,self.y+y
     self.scene:insert(self)
 end
+function Rectangle.moveTo(self, x,y)
+    self.scene:remove(self)
+    self.x,self.y = x-self.w/2,y-self.h/2
+    self.scene:insert(self)
+end
+function Rectangle.center(self)
+    return self.x+self.w/2,self.y+self.h/2
+end
+function Rectangle.bbox(self)
+    return self.x, self.y, self.x+self.w, self.y+self.h
+end
 
-local abs = math.abs
 
 function Col.init(self, size)
     self.size = size or 128 -- 128 units wide and high
     self.cells = getAutoTable()
 end
-function Col.getObjectBounds(self, object)
-    if object.parents[Circle] then
-        return math.floor(object.y/self.size), math.floor(object.x/self.size),
-            math.floor((object.y+object.r)/self.size), math.floor((object.x+object.r)/self.size)
-    else
-        return math.floor(object.y/self.size), math.floor(object.x/self.size),
-            math.floor((object.y+object.h)/self.size), math.floor((object.x+object.w)/self.size)
-    end
-end
 function Col.alterCell(self, object, value)
-    local cy,cx,cy2,cx2 = self:getObjectBounds(object)
-    self.cells[cy][cx][object] = value
-    self.cells[cy2][cx2][object] = value
-    self.cells[cy][cx2][object] = value
-    self.cells[cy2][cx][object] = value
+    local cells = self:getObjectCells(object)
+
+    for cell,_ in pairs(cells) do
+        cell[object] = value
+    end
 end
 function Col.remove(self, object)
     self:alterCell(object, nil)
@@ -77,74 +104,95 @@ function Col.insert(self, object)
 end
 function Col.overlaps(self, o1, o2)
     if o1.parents[Circle] and o2.parents[Circle] then
-        return (math.abs(o1.x-o2.x)<(o1.r+o2.r)) and (math.abs(o1.y-o2.y)<(o1.r+o2.r))
+        return (abs(o1.x-o2.x)<(o1.r+o2.r)) and (abs(o1.y-o2.y)<(o1.r+o2.r))
     elseif o1.parents[Rectangle] and o2.parents[Rectangle] then
-        
+        return (o1.x < o2.x + o2.w and
+            o1.x + o1.w > o2.x and
+            o1.y < o2.y + o2.h and
+            o1.h + o1.y > o2.y)
     elseif (o1.parents[Rectangle] or o2.parents[Circle]) or (o1.parents[Circle] or o2.parents[Rectangle]) then
+        -- Make o1 the circle and o2 the rectangle
         if o1.parents[Rectangle] then
-            -- Make o1 the circle and o2 the rectangle
             o1,o2 = o2,o1
         end
-        return (math.abs(o1.x-(o2.x+o2.w/2))<(o1.r+o2.w/2)) and (math.abs(o1.y-(o2.y+o2.h/2))<(o1.r+o2.h/2))
+        return (abs(o1.x-(o2.x+o2.w/2))<(o1.r+o2.w/2)) and (abs(o1.y-(o2.y+o2.h/2))<(o1.r+o2.h/2))
     end
 end
 
-function Col.collideSingle(self, object)
-    local cy,cx,cy2,cx2 = self:getObjectBounds(object)
+function Col.getObjectCells(self, object)
+    -- Return all the cells the object is present in
     local cells = {}
-    -- Automatically removes duplicates
-    cells[self.cells[cy][cx]] = true
-    cells[self.cells[cy2][cx2]] = true
-    cells[self.cells[cy][cx2]] = true
-    cells[self.cells[cy2][cx]] = true
+
+    local y = floor(object.y/self.size)
+    local x = floor(object.x/self.size)
+    local hPoints = floor((object.y+object.h)/self.size)
+    local wPoints = floor((object.x+object.w)/self.size)
+    for cy=y,hPoints do
+        for cx=x,wPoints do
+            cells[self.cells[cy][cx]] = true
+        end
+    end
+
+    return cells
+end
+
+function Col.neighbors(self, object)
+    local cells = self:getObjectCells(object)
     
-    local candidates = {}
+    local others = {}
     for cell,_ in pairs(cells) do
         for other in pairs(cell) do
             if not(object == other) then
-                if Col:overlaps(object, other) then
-                    candidates[other] = true
-                end
+                others[other] = true
             end
         end
     end
+    return others
+end
+
+
+function Col.collideSingle(self, object)
+    local candidates = self:neighbors(object)
+    
+    for other in pairs(candidates) do
+        if not(object==other) then
+            if Col:overlaps(object, other) then
+                candidates[other] = true
+            else
+                candidates[other] = nil
+            end
+        end
+    end
+    return candidates
 end
 function Col.collideList(self, object, list, callback)
-    local cy,cx,cy2,cx2 = self:getObjectBounds(object)
-    local cells = {}
-    -- Automatically removes duplicates
-    cells[self.cells[cy][cx]] = true
-    cells[self.cells[cy2][cx2]] = true
-    cells[self.cells[cy][cx2]] = true
-    cells[self.cells[cy2][cx]] = true
-    
-    local candidates = {}
+    local hitboxName = hitboxName or 'hitbox'
+    local shape = object.bounds[hitboxName]
+
+    local cells = self:getObjectCells(shape)
+
     for cell,_ in pairs(cells) do
         for other in pairs(cell) do
-            if not(object == other) then
-                if Col:overlaps(object, other) then
-                    candidates[other] = true
+            if not(object == other.parent) and list[other.parent] then
+                if Col:overlaps(shape, other) then
+                    callback(object, other.parent)
                 end
             end
         end
     end
 end
 function Col.collideTwoLists(self, list1, list2, callback, hitboxName)
-    for shape,_ in pairs(list2) do
-        local cy,cx,cy2,cx2 = self:getObjectBounds(shape)
-        local cells = {}
-        -- Automatically removes duplicates
-        cells[self.cells[cy][cx]] = true
-        cells[self.cells[cy2][cx2]] = true
-        cells[self.cells[cy][cx2]] = true
-        cells[self.cells[cy2][cx]] = true
-        
-        local candidates = {}
+    for object,_ in pairs(list1) do
+        local hitboxName = hitboxName or 'hitbox'
+        local shape = object.bounds[hitboxName]
+
+        local cells = self:getObjectCells(shape)
+
         for cell,_ in pairs(cells) do
             for other in pairs(cell) do
-                if not(shape == other) then
+                if not(object == other.parent) and list2[other.parent] then
                     if Col:overlaps(shape, other) then
-                        candidates[other] = true
+                        callback(object, other.parent)
                     end
                 end
             end
@@ -152,7 +200,7 @@ function Col.collideTwoLists(self, list1, list2, callback, hitboxName)
     end
 end
 
-function Col.collisions(self, object1, object2)
+function Col.collisions(self, object1, object2, callback, hitboxName)
     if object1 and not(object2) then
 		return self:collideSingle(object1)
 	elseif object1.__name and not(object2.__name) then
@@ -171,7 +219,6 @@ function Col.collisions(self, object1, object2)
 
     return candidates
 end
-
 
 function Col.circle(self, x,y,r)
     local circ = Circle(x,y,r,self)
