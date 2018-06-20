@@ -10,6 +10,9 @@
 
         ...
     end
+
+    TODO
+    Collisions using circles. Currently they just return their bounding box results.
 --]]
 
 function getAutoTable()
@@ -165,7 +168,7 @@ function Col.collideSingle(self, object)
     end
     return candidates
 end
-function Col.collideList(self, object, list, callback)
+function Col.collideList(self, object, list, callback, hitboxName)
     local hitboxName = hitboxName or 'hitbox'
     local shape = object.bounds[hitboxName]
 
@@ -207,7 +210,7 @@ function Col.collisions(self, object1, object2, callback, hitboxName)
 		-- object1 is an entity and object2 is a list. object1 should be a bound, object2 should be parent set
 		-- returns the object parent
 		if next(object2) then
-			self:collideList(object1, object2, callback)
+			self:collideList(object1, object2, callback, hitboxName)
 		end
 	else
 		-- assumes both objects are lists
